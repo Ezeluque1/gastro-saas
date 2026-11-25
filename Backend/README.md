@@ -18,37 +18,49 @@ y Docker.
 ```bash
 cp .env.example .env
 cp .env.test.example .env.test
-docker compose up -d db     # PostgreSQL 18 en el puerto 5434
 npm install
+npm run test:local          # levanta Postgres, migra y corre las 57 pruebas
+```
+
+`test:local` es el comando que levanta todo: arranca el contenedor, espera su
+healthcheck, aplica las migraciones en la base de pruebas y corre Vitest. Sirve
+para verificar de cero que el entorno quedo bien.
+
+Para levantar el servidor:
+
+```bash
+npm run db:up               # Postgres 18 en el puerto 5434
 npm run db:deploy           # migraciones en la base de desarrollo
-npm run db:deploy:test      # migraciones en la base de pruebas
 npm run dev
 curl -i http://localhost:3000/health
 ```
 
-Los dos primeros comandos son `copy` en PowerShell. El resto corre igual en
-cualquier shell: los scripts de npm no dependen de la sintaxis de variables de
-entorno, que es distinta en bash y en PowerShell.
+Los dos `cp` son `copy` en PowerShell. El resto corre igual en cualquier shell:
+los scripts de npm no dependen de la sintaxis de variables de entorno, que es
+distinta en bash y en PowerShell.
 
 El puerto es 5434 y no el 5432 habitual para no chocar con otros PostgreSQL ya
 instalados en la máquina.
 
 ## Comandos
 
-| Comando                   | Qué hace                                    |
-| ------------------------- | ------------------------------------------- |
-| `npm run dev`             | Servidor con recarga (`tsx watch`)          |
-| `npm run build`           | Compila a `dist/`                           |
-| `npm run typecheck`       | `tsc --noEmit`                              |
-| `npm run lint`            | ESLint, incluidas las reglas de modularidad |
-| `npm run format`          | Prettier                                    |
-| `npm test`                | Vitest contra PostgreSQL real               |
-| `npm run coverage`        | Pruebas con cobertura                       |
-| `npm run db:migrate`      | Crea y aplica una migración (desarrollo)    |
-| `npm run db:deploy`       | Aplica las migraciones existentes           |
-| `npm run db:deploy:test`  | Igual, sobre la base de pruebas             |
-| `npm run db:reset`        | Borra y recrea la base de desarrollo        |
-| `npm run monitoring:test` | Fuerza un error para verificar el monitoreo |
+| Comando                   | Qué hace                                                          |
+| ------------------------- | ----------------------------------------------------------------- |
+| `npm run dev`             | Servidor con recarga (`tsx watch`)                                |
+| `npm run build`           | Compila a `dist/`                                                 |
+| `npm run typecheck`       | `tsc --noEmit`                                                    |
+| `npm run lint`            | ESLint, incluidas las reglas de modularidad                       |
+| `npm run format`          | Prettier                                                          |
+| `npm test`                | Vitest contra PostgreSQL real (la base ya tiene que estar arriba) |
+| `npm run test:local`      | Levanta Postgres, migra y corre las pruebas                       |
+| `npm run coverage`        | Pruebas con cobertura                                             |
+| `npm run db:up`           | Levanta Postgres y espera su healthcheck                          |
+| `npm run db:down`         | Baja el contenedor                                                |
+| `npm run db:migrate`      | Crea y aplica una migración (desarrollo)                          |
+| `npm run db:deploy`       | Aplica las migraciones existentes                                 |
+| `npm run db:deploy:test`  | Igual, sobre la base de pruebas                                   |
+| `npm run db:reset`        | Borra y recrea la base de desarrollo                              |
+| `npm run monitoring:test` | Fuerza un error para verificar el monitoreo                       |
 
 ## Lo que ya está en pie
 
@@ -81,35 +93,46 @@ lleva al log.
 solo importa el `index.ts` de otro, y el cliente Prisma no se puede importar
 fuera de `shared/db`. Está en `eslint.config.js` y falla el CI.
 
-**Monitoreo.** `src/shared/monitoring/` es la única salida hacia Better Stack.
-Sin `MONITORING_DSN` queda inactivo, así que desarrollo y CI no necesitan
-cuenta.
+**Monitoreo.** `src/shared/monitoring/` es la única salida hacia Better Stack,
+con el SDK compatible con Sentry: cambiar de proveedor es cambiar el DSN. Sin
+`MONITORING_DSN` queda inactivo, así que CI y una clonada nueva no necesitan
+cuenta. Verificado de punta a punta: el endpoint de ingesta responde 200 y los
+errores llegan al panel etiquetados por `tenant_id`. `npm run monitoring:test`
+lo reproduce y avisa si falta el DSN.
 
 ## Pendientes conocidos
 
-Ninguno bloquea el desarrollo. El paso a paso para cerrarlos, con verificación
-y vuelta atrás, está en
+Ninguno bloquea el desarrollo. El paso a paso está en
 [`../docs/pendientes-fase-0.md`](../docs/pendientes-fase-0.md).
 
-- **`MONITORING_DSN` sin cargar.** Es el único punto del entregable de la Fase 0
-  que quedó sin verificar: falta la cuenta de Better Stack. El módulo y el
-  script de prueba están listos — `npm run monitoring:test` avisa si el DSN
-  falta y envía el error si está. Es cargar la variable, no cambiar código.
 - **Node 24.** El documento fija Node 24 (LTS activa); la máquina de desarrollo
   tiene 22.19. Prisma 7 pide 20.19 como mínimo y Express 5 pide 18, así que
-  todo funciona, y el `Dockerfile` y el CI ya usan Node 24. Se resuelve con fnm
-  y un `.node-version`.
+  todo funciona, y el `Dockerfile` y el CI ya usan Node 24. Es una diferencia
+  entre el entorno local y producción: conviene cerrarla con fnm y un
+  `.node-version` antes del piloto.
+- **`release` en el monitoreo.** Sin ese campo no se pueden agrupar los errores
+  por versión desplegada ("este bug apareció en el deploy de ayer"). Es pasarle
+  el SHA del commit o la versión del `package.json` a `Sentry.init`. Conviene
+  antes del piloto.
+- **Integraciones del SDK de monitoreo.** `@sentry/node` v11 instala por defecto
+  decenas de integraciones que este proyecto no usa (Google GenAI, Mistral,
+  Firebase, ClickHouse). No rompe nada, pero infla el arranque: se recorta
+  declarando `integrations` explícitas.
 - **dependency-cruiser** para detectar ciclos entre módulos: con los módulos de
-  la Fase 0 todavía no aporta.
+  la Fase 0 todavía no aporta. Los límites ya los hace cumplir ESLint.
 - **Monitores de Better Stack** (uptime de `/health`, heartbeats de tareas
   programadas, webhook de WhatsApp): necesitan una URL pública, así que son
-  Fase 8.
+  Fase 8. El plan gratuito da 10 monitores y 100.000 excepciones por mes, que
+  alcanza con margen.
+- **Uso comercial del plan gratuito de Better Stack**: su página lo describe
+  como para "proyectos personales" y no lo prohíbe explícitamente. Falta
+  confirmarlo con su soporte antes de cobrarle a un local.
 
 ### Resueltos
 
 - El aviso de `npm audit` por un ReDoS en `effect`: `@prisma/config` lo fija en
-  `3.20.0` y la vulnerabilidad afecta a `<=3.22.0`, así que hay un
-  `overrides` a `3.22.5` en `package.json` — mismo major, y se verificó que la
-  CLI de Prisma y las migraciones siguen funcionando. **No borrar ese override
-  sin revisar `npm audit` antes.** Cuando Prisma suba `effect` por su cuenta
+  `3.20.0` y la vulnerabilidad afecta a `<=3.22.0`, así que hay un `overrides`
+  a `3.22.5` en `package.json` — mismo major, y se verificó que la CLI de Prisma
+  y las migraciones siguen funcionando. **No borrar ese override sin revisar
+  `npm audit` antes.** Cuando Prisma suba `effect` por su cuenta
   (`npm view @prisma/config dependencies.effect`), se puede quitar.
