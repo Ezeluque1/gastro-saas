@@ -1,0 +1,15 @@
+// Datasource y generador. El modelo de negocio se divide en un archivo .prisma
+// por modulo (docs/Backend: "Reglas de modularidad" y "Estructura de
+// carpetas"). Las tablas de negocio entran en la Fase 1.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../../src/generated/prisma"
+}
+
+// En Prisma 7 el datasource NO lleva `url`. La URL de las migraciones vive en
+// prisma.config.ts (rol migrador) y la aplicacion se conecta pasandole un
+// adaptador al constructor de PrismaClient (rol sin privilegios).
+datasource db {
+  provider = "postgresql"
+}

@@ -1,0 +1,22 @@
+# Dependencias
+Backend/node_modules/
+
+# Compilado y generado
+Backend/dist/
+Backend/src/generated/
+Backend/coverage/
+
+# Entorno: .env.example y .env.test.example SI se versionan.
+Backend/.env
+Backend/.env.test
+Backend/.env.*.local
+
+# Logs y temporales
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+
+# Editores
+.vscode/
+.idea/

@@ -1,0 +1,12 @@
+# Mismo final de linea en todas las plataformas: Prettier espera LF y el CI
+# corre en Linux. Sin esto, en Windows el working copy queda con CRLF y
+# `prettier --check` falla en local pero pasa en CI.
+* text=auto eol=lf
+
+# Binarios: que git no toque nada.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary

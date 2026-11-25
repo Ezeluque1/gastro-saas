@@ -1,0 +1,140 @@
+name: CI
+
+# El repositorio tiene docs/ en la raiz y el codigo en Backend/, asi que todos
+# los pasos de Node corren con working-directory: Backend.
+#
+# docs/Backend: "Integracion y despliegue continuo" y "Pruebas".
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: Backend
+
+jobs:
+  check:
+    name: Lint, tipos y pruebas
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Misma version mayor que en desarrollo.
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 15
+
+    env:
+      NODE_ENV: test
+      APP_ORIGIN: http://localhost:3000
+      # Las pruebas corren contra el rol SIN privilegios, igual que la
+      # aplicacion en produccion: es la unica forma de que las pruebas de
+      # aislamiento prueben algo.
+      DATABASE_URL: postgresql://gastro_app:app_dev@localhost:5432/gastro_test
+      DATABASE_MIGRATION_URL: postgresql://gastro_migrator:migrator_dev@localhost:5432/gastro_test
+      LOG_LEVEL: silent
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          # Node 24 es la linea LTS que fija el documento.
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: Backend/package-lock.json
+
+      - name: Crear roles y bases
+        # Se ejecuta el MISMO script que usa el contenedor de desarrollo, para
+        # que CI y local no se vayan separando.
+        run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f docker/postgres-init/01-roles.sql
+        env:
+          PGPASSWORD: postgres
+
+      - run: npm ci
+
+      - name: Generar el cliente Prisma
+        run: npx prisma generate
+
+      - name: Aplicar migraciones
+        run: npx prisma migrate deploy
+
+      - name: Chequeo de tipos
+        run: npm run typecheck
+
+      - name: Linter
+        run: npm run lint
+
+      - name: Formato
+        run: npx prettier --check .
+
+      - name: Pruebas
+        run: npm test
+
+  build:
+    name: Build de la imagen
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Construir la imagen
+        # El build en la imagen es parte del CI a proposito: es donde aparece la
+        # friccion de ESM + Prisma 7 si el generador y el tsconfig se
+        # desalinean. Vale encontrarlo aca y no al desplegar.
+        uses: docker/build-push-action@v6
+        with:
+          context: ./Backend
+          push: false
+          load: true
+          tags: saas-gastro-backend:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Verificar que la imagen arranca y responde /health
+        working-directory: .
+        run: |
+          docker network create ci-net
+          docker run -d --name ci-db --network ci-net \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            postgres:18-alpine
+          for i in $(seq 1 60); do
+            docker exec ci-db pg_isready -U postgres && break
+            sleep 1
+          done
+          docker cp Backend/docker/postgres-init/01-roles.sql ci-db:/tmp/roles.sql
+          docker exec -e PGPASSWORD=postgres ci-db \
+            psql -U postgres -v ON_ERROR_STOP=1 -f /tmp/roles.sql
+          docker run -d --name ci-api --network ci-net -p 3000:3000 \
+            -e APP_ORIGIN=http://localhost:3000 \
+            -e DATABASE_URL=postgresql://gastro_app:app_dev@ci-db:5432/gastro \
+            -e DATABASE_MIGRATION_URL=postgresql://gastro_migrator:migrator_dev@ci-db:5432/gastro \
+            saas-gastro-backend:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3000/health; then
+              echo "health OK"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "la imagen no respondio /health"
+          docker logs ci-api
+          exit 1

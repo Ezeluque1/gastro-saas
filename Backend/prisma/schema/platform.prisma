@@ -1,0 +1,12 @@
+// Modulo: tenants (plataforma).
+// Fase 0 solo define la tabla de control de migraciones aplicadas a mano,
+// que sirve para verificar el pipeline de migraciones de punta a punta.
+// Las tablas reales de la plataforma (tenants, plans, tenant_settings) son Fase 1.
+
+model SchemaCheck {
+  id        String   @id @default(uuid()) @db.Uuid
+  note      String   @db.VarChar(200)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@map("schema_check")
+}

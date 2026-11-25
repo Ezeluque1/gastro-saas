@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: gastro-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      - '5434:5432'
+    volumes:
+      # En las imagenes de Postgres 18+ el mount va en /var/lib/postgresql, no en
+      # /var/lib/postgresql/data: la imagen guarda los datos en un subdirectorio
+      # por version mayor para que pg_upgrade funcione.
+      - gastro-db-data:/var/lib/postgresql
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  gastro-db-data:
