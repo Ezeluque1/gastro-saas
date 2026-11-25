@@ -19,8 +19,13 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
+    "db:deploy:test": "cross-env NODE_ENV=test prisma migrate deploy",
     "db:reset": "prisma migrate reset --force",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "monitoring:test": "tsx src/scripts/force-error.ts"
+  },
+  "overrides": {
+    "effect": "3.22.5"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.10.1",
@@ -41,6 +46,7 @@
     "@types/pg": "^8.23.1",
     "@types/supertest": "^7.2.1",
     "@vitest/coverage-v8": "^5.1.2",
+    "cross-env": "^10.1.0",
     "eslint": "^10.15.0",
     "eslint-config-prettier": "^10.1.8",
     "pino-pretty": "^13.2.0",

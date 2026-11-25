@@ -18,31 +18,37 @@ y Docker.
 ```bash
 cp .env.example .env
 cp .env.test.example .env.test
-docker compose up -d db          # PostgreSQL 18 en el puerto 5434
+docker compose up -d db     # PostgreSQL 18 en el puerto 5434
 npm install
-npm run db:deploy                # migraciones en la base de desarrollo
-NODE_ENV=test npm run db:deploy  # migraciones en la base de pruebas
+npm run db:deploy           # migraciones en la base de desarrollo
+npm run db:deploy:test      # migraciones en la base de pruebas
 npm run dev
 curl -i http://localhost:3000/health
 ```
+
+Los dos primeros comandos son `copy` en PowerShell. El resto corre igual en
+cualquier shell: los scripts de npm no dependen de la sintaxis de variables de
+entorno, que es distinta en bash y en PowerShell.
 
 El puerto es 5434 y no el 5432 habitual para no chocar con otros PostgreSQL ya
 instalados en la máquina.
 
 ## Comandos
 
-| Comando              | Qué hace                                    |
-| -------------------- | ------------------------------------------- |
-| `npm run dev`        | Servidor con recarga (`tsx watch`)          |
-| `npm run build`      | Compila a `dist/`                           |
-| `npm run typecheck`  | `tsc --noEmit`                              |
-| `npm run lint`       | ESLint, incluidas las reglas de modularidad |
-| `npm run format`     | Prettier                                    |
-| `npm test`           | Vitest contra PostgreSQL real               |
-| `npm run coverage`   | Pruebas con cobertura                       |
-| `npm run db:migrate` | Crea y aplica una migración (desarrollo)    |
-| `npm run db:deploy`  | Aplica las migraciones existentes           |
-| `npm run db:reset`   | Borra y recrea la base de desarrollo        |
+| Comando                   | Qué hace                                    |
+| ------------------------- | ------------------------------------------- |
+| `npm run dev`             | Servidor con recarga (`tsx watch`)          |
+| `npm run build`           | Compila a `dist/`                           |
+| `npm run typecheck`       | `tsc --noEmit`                              |
+| `npm run lint`            | ESLint, incluidas las reglas de modularidad |
+| `npm run format`          | Prettier                                    |
+| `npm test`                | Vitest contra PostgreSQL real               |
+| `npm run coverage`        | Pruebas con cobertura                       |
+| `npm run db:migrate`      | Crea y aplica una migración (desarrollo)    |
+| `npm run db:deploy`       | Aplica las migraciones existentes           |
+| `npm run db:deploy:test`  | Igual, sobre la base de pruebas             |
+| `npm run db:reset`        | Borra y recrea la base de desarrollo        |
+| `npm run monitoring:test` | Fuerza un error para verificar el monitoreo |
 
 ## Lo que ya está en pie
 
@@ -82,19 +88,28 @@ cuenta.
 ## Pendientes conocidos
 
 Ninguno bloquea el desarrollo. El paso a paso para cerrarlos, con verificación
-y vuelta atrás de cada uno, está en
+y vuelta atrás, está en
 [`../docs/pendientes-fase-0.md`](../docs/pendientes-fase-0.md).
 
-- **`MONITORING_DSN` sin cargar.** El módulo está completo pero no se verificó
-  contra Better Stack: falta la cuenta. Es cargar la variable, no cambiar
-  código.
+- **`MONITORING_DSN` sin cargar.** Es el único punto del entregable de la Fase 0
+  que quedó sin verificar: falta la cuenta de Better Stack. El módulo y el
+  script de prueba están listos — `npm run monitoring:test` avisa si el DSN
+  falta y envía el error si está. Es cargar la variable, no cambiar código.
 - **Node 24.** El documento fija Node 24 (LTS activa); la máquina de desarrollo
   tiene 22.19. Prisma 7 pide 20.19 como mínimo y Express 5 pide 18, así que
-  todo funciona, y el Dockerfile y el CI ya usan Node 24. Conviene alinear el
-  entorno local.
-- **`npm audit`** reporta un ReDoS en `effect`, dependencia transitiva de la
-  CLI `prisma`. Es una `devDependency` y no entra en la imagen de producción
-  (el Dockerfile instala con `--omit=dev`). El "arreglo" que ofrece npm es
-  bajar a Prisma 6, que es el plan B del documento y no se activa por esto.
+  todo funciona, y el `Dockerfile` y el CI ya usan Node 24. Se resuelve con fnm
+  y un `.node-version`.
 - **dependency-cruiser** para detectar ciclos entre módulos: con los módulos de
-  la Fase 0 no aporta todavía.
+  la Fase 0 todavía no aporta.
+- **Monitores de Better Stack** (uptime de `/health`, heartbeats de tareas
+  programadas, webhook de WhatsApp): necesitan una URL pública, así que son
+  Fase 8.
+
+### Resueltos
+
+- El aviso de `npm audit` por un ReDoS en `effect`: `@prisma/config` lo fija en
+  `3.20.0` y la vulnerabilidad afecta a `<=3.22.0`, así que hay un
+  `overrides` a `3.22.5` en `package.json` — mismo major, y se verificó que la
+  CLI de Prisma y las migraciones siguen funcionando. **No borrar ese override
+  sin revisar `npm audit` antes.** Cuando Prisma suba `effect` por su cuenta
+  (`npm view @prisma/config dependencies.effect`), se puede quitar.
