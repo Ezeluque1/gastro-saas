@@ -7,8 +7,10 @@ Backend (arquitectura y contrato de la API) y el plan de fases. **Si el código 
 los documentos no coinciden, manda el documento** — y hay que actualizar el
 documento si algo cambió al implementarlo.
 
-Estado actual: **Fase 0 cerrada** (base del proyecto). Las reglas de negocio
-entran desde la Fase 1.
+Estado actual: **Fase 0 cerrada** y **Fase 1.1 cerrada** (esquema base y
+aislamiento entre locales). Siguen la 1.2 (`create_tenant` y las funciones
+`SECURITY DEFINER`), la 1.3 (login y sesiones) y la 1.4 (ciclo de claves y
+estados del local).
 
 ## Arranque
 
@@ -19,7 +21,7 @@ y Docker.
 cp .env.example .env
 cp .env.test.example .env.test
 npm install
-npm run test:local          # levanta Postgres, migra y corre las 57 pruebas
+npm run test:local          # levanta Postgres, migra y corre las 89 pruebas
 ```
 
 `test:local` es el comando que levanta todo: arranca el contenedor, espera su
@@ -72,10 +74,22 @@ pool y la request siguiente arrancaría con el tenant de otro local.
 `tests/integration/with-tenant.test.ts` cubre exactamente eso, y se verificó
 que la prueba **falla** si alguien cambia ese argumento.
 
-Las políticas RLS llegan con las tablas de negocio, en la Fase 1. Lo que ya
-está garantizado es el mecanismo del que dependen, más que el rol de la
-aplicación no es superusuario, no es dueño de las tablas, no tiene `BYPASSRLS`
-y no puede alterar el esquema.
+Las políticas RLS ya están: 12 tablas con `ENABLE` **y** `FORCE ROW LEVEL
+SECURITY`, cada una con su política `tenant_isolation`.
+`tests/integration/tenant-isolation.test.ts` siembra dos locales y verifica que
+ninguno lea, modifique, borre ni **inserte** filas del otro, que una consulta
+sin contexto falle en vez de devolver cero filas, y que el aislamiento aguante
+aunque el filtro de la aplicación esté roto.
+
+Hay además pruebas que leen el catálogo de Postgres, y no son redundantes:
+`FORCE` solo cambia algo para el dueño de las tablas, y las pruebas corren como
+`gastro_app`, que no lo es. Se comprobó que quitando `FORCE` las pruebas de
+comportamiento siguen pasando — de ahí que haga falta mirar `pg_class`. Esa
+prueba descubre la lista de tablas de la base, así que una tabla nueva con
+`tenant_id` a la que se le olvide la política rompe la prueba sola.
+
+El rol de la aplicación no es superusuario, no es dueño de las tablas, no tiene
+`BYPASSRLS` y no puede alterar el esquema.
 
 **Dos roles de base.** `gastro_migrator` es dueño de las tablas y ejecuta las
 migraciones (`DATABASE_MIGRATION_URL`, que usa solo la CLI de Prisma).
@@ -92,6 +106,13 @@ lleva al log.
 **Límites entre módulos.** ESLint los hace cumplir, no la disciplina: un módulo
 solo importa el `index.ts` de otro, y el cliente Prisma no se puede importar
 fuera de `shared/db`. Está en `eslint.config.js` y falla el CI.
+
+**Permisos.** El catálogo vive en el código
+(`src/modules/users/permissions.ts`), no en una tabla: es parte del contrato de
+la API. El rol Dueño no guarda sus permisos fila por fila — se calculan — así un
+permiso nuevo le llega solo sin migrar datos. La plantilla de roles que
+`create_tenant` va a copiar está ahí, con una prueba de que no referencia
+permisos inexistentes.
 
 **Monitoreo.** `src/shared/monitoring/` es la única salida hacia Better Stack,
 con el SDK compatible con Sentry: cambiar de proveedor es cambiar el DSN. Sin

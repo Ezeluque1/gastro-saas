@@ -1,0 +1,61 @@
+// Modulo: auth (sesiones).
+//
+// Sesiones del lado del servidor, sin JWT ni token de renovacion. El token que
+// viaja en la cookie es opaco y de la base solo se guarda su hash, asi que un
+// volcado de la tabla no permite hacerse pasar por nadie. Revocar es inmediato:
+// basta marcar la fila.
+//
+// docs/Backend: "Autenticacion" y "Modelo de datos" (Usuarios y permisos).
+
+/// Tipo de sesion.
+///
+/// `support` es la sesion de soporte de solo lectura del administrador de
+/// plataforma: dura 30 minutos, no tiene user_id y usa su propia cookie.
+enum SessionKind {
+  user
+  support
+
+  @@map("session_kind")
+}
+
+/// Una sesion activa o ya terminada.
+model UserSession {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Nulo solo en las sesiones de soporte, que no pertenecen a ningun usuario
+  /// del local. Esa es toda la razon por la que esta columna es opcional.
+  userId String? @map("user_id") @db.Uuid
+
+  kind SessionKind @default(user)
+
+  /// Hash del token opaco. Unico en toda la tabla: es con lo que se busca la
+  /// sesion en cada request.
+  tokenHash String @unique @map("token_hash") @db.VarChar(255)
+
+  /// La duracion es configurable por rol, para que el repartidor mantenga la
+  /// sesion larga en el celular.
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(3)
+
+  /// Revocacion inmediata: al cambiar o restablecer una clave, al dar de baja
+  /// un empleado y al suspender el local.
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz(3)
+
+  /// Para que el usuario reconozca sus sesiones en pantalla. Nunca se guarda
+  /// la IP completa ni nada que identifique mas que el dispositivo.
+  device String? @db.VarChar(200)
+
+  lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz(3)
+
+  /// Apunta a support_sessions, que llega en la Fase 8 junto con el panel de
+  /// plataforma. Sin FK todavia a proposito.
+  supportSessionId String? @map("support_session_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@index([expiresAt])
+  @@map("user_sessions")
+}

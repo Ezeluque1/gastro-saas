@@ -1,0 +1,43 @@
+// Modulo: audit.
+//
+// Registro de los cambios que el Dueno tiene que poder revisar: precios,
+// permisos, reaperturas de caja, ediciones y cancelaciones de pedidos,
+// descuentos, ajustes de stock, carga posterior de pedidos, restablecimiento de
+// claves y exportaciones.
+//
+// Es una tabla de solo agregar: no se edita ni se borra.
+//
+// docs/Backend: "Modelo de datos" (Auditoria) y "Permisos por defecto de cada
+// rol" (Acciones siempre auditadas).
+
+model AuditLogEntry {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Nulo cuando la accion no la hizo un usuario del local, por ejemplo algo
+  /// disparado por el bot o por una tarea programada.
+  userId String? @map("user_id") @db.Uuid
+
+  /// Que entidad se toco y cual. `entity` es el nombre de la tabla.
+  entity   String @db.VarChar(60)
+  entityId String @map("entity_id") @db.Uuid
+
+  action String @db.VarChar(60)
+
+  /// Estado antes y despues del cambio. Nunca se guardan hashes de clave ni
+  /// tokens: el valor de esas columnas se reemplaza antes de escribir aca.
+  before Json?
+  after  Json?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // El orden del historial es por instante descendente con el id como
+  // desempate, y el indice arranca por tenant_id: es lo que pide la paginacion
+  // por cursor.
+  @@index([tenantId, createdAt, id])
+  @@index([tenantId, entity, entityId])
+  @@map("audit_log")
+}

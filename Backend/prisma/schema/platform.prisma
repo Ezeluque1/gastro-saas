@@ -1,12 +1,249 @@
 // Modulo: tenants (plataforma).
-// Fase 0 solo define la tabla de control de migraciones aplicadas a mano,
-// que sirve para verificar el pipeline de migraciones de punta a punta.
-// Las tablas reales de la plataforma (tenants, plans, tenant_settings) son Fase 1.
+//
+// Locales, planes, configuracion, sucursales, medios de pago y cajas.
+//
+// Toda tabla de negocio lleva tenant_id y su politica RLS. Las dos
+// excepciones estan marcadas abajo: `plans` es configuracion compartida y
+// `platform_audit_log` es de la plataforma, no de un local.
+//
+// docs/Backend: "Modelo de datos" (Plataforma) y "Tablas y columnas que suman
+// las decisiones de plataforma".
 
-model SchemaCheck {
-  id        String   @id @default(uuid()) @db.Uuid
-  note      String   @db.VarChar(200)
+/// Planes de la plataforma.
+///
+/// Unica tabla sin tenant_id y sin RLS: es configuracion compartida. El precio
+/// y el maximo de sucursales se cambian aca, no en el codigo.
+model Plan {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @db.VarChar(80)
+
+  /// Precio del plan base, con una sucursal incluida.
+  basePrice Decimal @map("base_price") @db.Decimal(14, 2)
+  /// Precio de cada sucursal adicional.
+  extraBranchPrice Decimal @map("extra_branch_price") @db.Decimal(14, 2)
+  /// Tope de autoservicio. Se compara al crear una sucursal.
+  maxBranches Int @map("max_branches")
+
+  features Json    @default("{}")
+  active   Boolean @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenants Tenant[]
+
+  @@map("plans")
+}
+
+/// Estado del local. Decide que puede hacer cada rol.
+///
+/// `past_due` (en mora) funciona igual que activo, con aviso al Dueno.
+/// `suspended` deja entrar solo a Dueno y Encargado, en solo lectura.
+/// `cancelled` no deja entrar a nadie.
+enum TenantStatus {
+  pilot
+  active
+  past_due
+  suspended
+  cancelled
+
+  @@map("tenant_status")
+}
+
+/// Un local (tenant).
+///
+/// Ojo con la RLS de esta tabla: su politica compara `id`, no `tenant_id`,
+/// porque el id ES el tenant. Por eso resolver el slug en el login necesita
+/// una funcion SECURITY DEFINER y no se puede hacer con una consulta normal.
+model Tenant {
+  id   String @id @default(uuid()) @db.Uuid
+  name String @db.VarChar(120)
+
+  /// Forma parte de la URL de login (app.<dominio>/l/<slug>). Se valida como
+  /// nombre DNS y es inmutable una vez creado: cambiarlo rompe los enlaces y
+  /// las cookies, que llevan el path del local.
+  slug String @unique @db.VarChar(63)
+
+  planId String       @map("plan_id") @db.Uuid
+  status TenantStatus @default(pilot)
+
+  trialEndsAt DateTime? @map("trial_ends_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  plan           Plan            @relation(fields: [planId], references: [id], onDelete: Restrict)
+  settings       TenantSettings?
+  branches       Branch[]
+  paymentMethods PaymentMethod[]
+  cashRegisters  CashRegister[]
+  users          User[]
+  roles          Role[]
+  auditLog       AuditLogEntry[]
+
+  @@index([status])
+  @@map("tenants")
+}
+
+/// Si un pago pendiente al entregar solo avisa o bloquea la entrega.
+enum PendingPaymentPolicy {
+  warn
+  block
+
+  @@map("pending_payment_policy")
+}
+
+/// Configuracion del local, una fila por tenant.
+///
+/// Lo que el frontend lee y el Dueno ajusta sin ayuda tecnica. Los valores que
+/// el servidor necesita para calcular (zona horaria, corte del dia, topes)
+/// son columnas; el resto va en `settings` como jsonb, porque son preferencias
+/// que crecen sin afectar consultas.
+model TenantSettings {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @unique @map("tenant_id") @db.Uuid
+
+  /// Zona horaria IANA del local. Decide a que dia comercial pertenece un pedido.
+  timezone String @default("America/Argentina/Buenos_Aires") @db.VarChar(64)
+
+  /// Hora de inicio del dia comercial. Un pedido a la 01:30 del sabado
+  /// pertenece al viernes. Se guarda como "HH:MM".
+  businessDayCutoff String @default("05:00") @map("business_day_cutoff") @db.VarChar(5)
+
+  /// Tope porcentual de descuento por pedido, sobre el total. Arranca en 10% y
+  /// el Dueno lo puede bajar incluso a 0. Lo que lo supera necesita aprobacion.
+  discountLimitPercent Decimal @default(10) @map("discount_limit_percent") @db.Decimal(5, 2)
+
+  /// Tope por egreso y tope acumulado de egresos por turno de caja.
+  ///
+  /// Arrancan en 0 A PROPOSITO: ningun monto en pesos tiene valor por defecto,
+  /// porque con la inflacion cualquier numero queda viejo. Se cargan en el alta
+  /// del local y, si no se cargan, 0 significa que TODO egreso requiere
+  /// aprobacion. No cambiar estos defaults por un numero "razonable".
+  egressLimitAmount      Decimal @default(0) @map("egress_limit_amount") @db.Decimal(14, 2)
+  egressShiftLimitAmount Decimal @default(0) @map("egress_shift_limit_amount") @db.Decimal(14, 2)
+
+  /// Pago pendiente al entregar: avisa o bloquea.
+  pendingPaymentOnDeliver PendingPaymentPolicy @default(warn) @map("pending_payment_on_deliver")
+
+  /// Stock insuficiente: solo advierte o bloquea la venta.
+  blockOnInsufficientStock Boolean @default(false) @map("block_on_insufficient_stock")
+
+  /// Bloquear el cierre de caja con rendiciones o pagos pendientes.
+  blockCloseWithPending Boolean @default(false) @map("block_close_with_pending")
+
+  /// Resto de las preferencias: moneda, redondeo, envio fijo, tiempos de
+  /// preparacion, alertas de stock, textos e impresion, comportamiento del bot.
+  settings Json @default("{}")
+
+  /// Control de ediciones simultaneas.
+  version Int @default(1)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_settings")
+}
+
+/// Sucursal. El stock y la caja son por sucursal.
+model Branch {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  name    String  @db.VarChar(120)
+  address String? @db.VarChar(250)
+  phone   String? @db.VarChar(40)
+
+  /// Horarios de atencion por dia.
+  schedule Json @default("{}")
+
+  /// Baja logica: una sucursal con historial no se borra.
+  active    Boolean   @default(true)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant          Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cashRegisters   CashRegister[]
+  userBranchRoles UserBranchRole[]
+
+  @@index([tenantId, name])
+  @@map("branches")
+}
+
+/// Tipo de medio de pago. Solo el efectivo suma al efectivo esperado en caja.
+enum PaymentMethodType {
+  cash
+  card
+  transfer
+  wallet
+
+  @@map("payment_method_type")
+}
+
+/// Medios de pago habilitados por el local.
+model PaymentMethod {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  name String            @db.VarChar(60)
+  type PaymentMethodType
+
+  /// La baja desactiva el medio y conserva los pagos historicos.
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, active])
+  @@map("payment_methods")
+}
+
+/// Caja fisica de una sucursal. Las sesiones (turnos) son de la Fase 6.
+model CashRegister {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  branchId String @map("branch_id") @db.Uuid
+
+  name   String  @db.VarChar(60)
+  active Boolean @default(true)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, branchId])
+  @@map("cash_registers")
+}
+
+/// Auditoria de la plataforma.
+///
+/// NO lleva RLS de tenant y el rol de la aplicacion NO puede leerla: registra
+/// acciones del administrador de plataforma y cada uso de las tres funciones
+/// SECURITY DEFINER. `tenantId` es a que local afecto la accion, no un dueno
+/// de la fila.
+model PlatformAuditLogEntry {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Nulo cuando la accion no la hizo un administrador, por ejemplo el uso de
+  /// resolve_tenant_by_slug durante un login.
+  adminId String? @map("admin_id") @db.Uuid
+
+  action   String  @db.VarChar(80)
+  tenantId String? @map("tenant_id") @db.Uuid
+
+  detail Json @default("{}")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  @@map("schema_check")
+  @@index([createdAt])
+  @@index([tenantId, createdAt])
+  @@map("platform_audit_log")
 }

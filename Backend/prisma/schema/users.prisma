@@ -1,0 +1,176 @@
+// Modulo: users (usuarios, roles y permisos).
+//
+// El catalogo de permisos NO es una tabla: vive en el codigo
+// (src/modules/users/permissions.ts), porque es parte del contrato y tiene que
+// poder versionarse junto a los endpoints que lo exigen. `role_permissions`
+// guarda el codigo como texto.
+//
+// La funcion puede(usuario, permiso, sucursal) y su middleware son Fase 2.
+//
+// docs/Backend: "Modelo de datos" (Usuarios y permisos), "Autorizacion" y
+// "Permisos por defecto de cada rol".
+
+/// Un usuario del local. Los repartidores son usuarios con rol Delivery.
+model User {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Con que entra. Unico DENTRO del local, no en toda la plataforma: dos
+  /// locales pueden tener cada uno su usuario "caja1", y asi no se pueden
+  /// enumerar cuentas entre locales.
+  login String @db.VarChar(60)
+
+  name String @db.VarChar(120)
+
+  /// Opcional salvo para el Dueno, que lo necesita para recuperar su clave solo.
+  email           String?   @db.VarChar(180)
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.Timestamptz(3)
+
+  /// argon2id. Nulo hasta que el usuario activa su cuenta: asi el administrador
+  /// que da de alta el local nunca conoce la clave del Dueno.
+  passwordHash String? @map("password_hash") @db.VarChar(255)
+
+  /// En el primer ingreso con clave temporal se obliga a elegir una propia.
+  mustChangePassword Boolean @default(false) @map("must_change_password")
+
+  /// Vencimiento de la clave temporal (24 a 72 horas). Nulo cuando la clave es
+  /// definitiva. Una clave temporal vencida no sirve para entrar.
+  passwordExpiresAt DateTime? @map("password_expires_at") @db.Timestamptz(3)
+
+  /// Link de activacion de un solo uso: se guarda el hash, nunca el token.
+  /// Verifica tambien el email, porque es el mismo link.
+  activationTokenHash String?   @map("activation_token_hash") @db.VarChar(255)
+  activationExpiresAt DateTime? @map("activation_expires_at") @db.Timestamptz(3)
+
+  /// Una baja de empleado es una desactivacion, no un borrado, y cierra sus
+  /// sesiones.
+  active    Boolean   @default(true)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+
+  /// Control de ediciones simultaneas.
+  version Int @default(1)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant       Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branchRoles  UserBranchRole[]
+  sessions     UserSession[]
+  resetCodes   PasswordResetCode[]
+  auditEntries AuditLogEntry[]
+
+  @@unique([tenantId, login])
+  @@index([tenantId, active])
+  @@map("users")
+}
+
+/// Un rol del local, con su conjunto de permisos.
+///
+/// `create_tenant` crea cuatro desde la plantilla: Dueno, Encargado,
+/// Recepcionista/Cajero y Delivery. Cocina no tiene rol en el MVP. El Dueno
+/// despues los puede editar o crear otros.
+model Role {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  name String @db.VarChar(60)
+
+  /// Rol de sistema: protegido, no se puede borrar ni renombrar.
+  ///
+  /// El Dueno ademas NO guarda sus permisos fila por fila en
+  /// role_permissions: se calculan en el codigo, asi un permiso nuevo del
+  /// catalogo le llega solo sin necesidad de migrar datos.
+  isSystem Boolean @default(false) @map("is_system")
+
+  /// Clave estable para reconocer los roles de la plantilla desde el codigo
+  /// (por ejemplo `owner`), independiente del nombre, que el Dueno puede
+  /// cambiar. Nulo en los roles que crea el local.
+  templateKey String? @map("template_key") @db.VarChar(40)
+
+  version Int @default(1)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  tenant      Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  permissions RolePermission[]
+  userRoles   UserBranchRole[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+/// Un permiso otorgado a un rol.
+///
+/// `permissionCode` es texto a proposito: el catalogo esta en el codigo, no en
+/// una tabla. Una migracion suma los permisos nuevos a los roles que
+/// correspondan.
+model RolePermission {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  roleId   String @map("role_id") @db.Uuid
+
+  permissionCode String @map("permission_code") @db.VarChar(60)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionCode])
+  @@index([tenantId])
+  @@map("role_permissions")
+}
+
+/// Rol de un usuario en una sucursal.
+///
+/// `branchId` nulo significa "el mismo rol en todas las sucursales". Los
+/// permisos que afectan a todo el local (precios, usuarios, configuracion,
+/// exportar) solo valen con una asignacion de alcance total, porque el precio
+/// y la configuracion son unicos para el local.
+model UserBranchRole {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  userId   String  @map("user_id") @db.Uuid
+  branchId String? @map("branch_id") @db.Uuid
+  roleId   String  @map("role_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  branch Branch? @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  role   Role    @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  // La unicidad real necesita tratar el NULL de branchId como un valor, para
+  // que no se pueda asignar dos veces el mismo rol global. Eso se agrega en la
+  // migracion con UNIQUE NULLS NOT DISTINCT, que Prisma todavia no modela.
+  @@index([tenantId, userId])
+  @@index([tenantId, branchId])
+  @@map("user_branch_roles")
+}
+
+/// Codigo de recuperacion de clave por email.
+///
+/// Solo para Duenos con email verificado: 6 digitos, un solo uso, vence a los
+/// 10 minutos, maximo 5 intentos. Se guarda el hash, nunca el codigo.
+model PasswordResetCode {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+
+  codeHash String @map("code_hash") @db.VarChar(255)
+
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+
+  /// Intentos fallidos. A los 5 el codigo deja de servir.
+  attempts Int @default(0)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId, createdAt])
+  @@map("password_reset_codes")
+}

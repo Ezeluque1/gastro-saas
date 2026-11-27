@@ -61,7 +61,7 @@ Total del MVP (fases 0 a 9): unas 21 a 24 semanas.
 **Objetivo:** que el aislamiento entre locales funcione antes de que existan datos de negocio.
 
 **Tareas**
-- Tablas base: `tenants`, `plans`, `tenant_settings`, `users`, `user_sessions`, `audit_log`.
+- Tablas base: `plans`, `tenants`, `tenant_settings`, `branches`, `payment_methods`, `cash_registers`, `users`, `roles`, `role_permissions`, `user_branch_roles`, `password_reset_codes`, `user_sessions`, `audit_log` y `platform_audit_log`. La lista original nombraba solo seis, pero `create_tenant` tiene que crear la primera sucursal, su caja, los roles base con sus permisos y los medios de pago por defecto, así que esas tablas se crean en esta fase. Los **endpoints** de usuarios y roles y el middleware `puede()` siguen siendo de la fase 2.
 - Row Level Security: `withTenant()` que abre una transacción y fija `app.tenant_id` con `set_config(..., true)`. Rol de aplicación sin `BYPASSRLS`.
 - Las tres funciones `SECURITY DEFINER`: `resolve_tenant_by_slug`, `resolve_tenant_by_wa_phone` y `create_tenant`, cada una con su registro de uso.
 - Script de alta de local (`create_tenant`): una sola transacción, idempotente. Crea tenant, primera sucursal y su caja, roles base desde la plantilla, primer Dueño con link de activación de un solo uso, configuración por defecto (incluidos los dos topes de egreso, que se piden en este paso y quedan en 0 si no se cargan) y plan.
