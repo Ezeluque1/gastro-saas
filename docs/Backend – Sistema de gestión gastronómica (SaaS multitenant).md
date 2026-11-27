@@ -91,6 +91,7 @@ Cada módulo es una pieza con límites claros: se puede entender, probar y modif
 | `delivery` | `orders`, `cash`, `users`, `audit` | Salidas y rendiciones |
 | `whatsapp` (fase 2) | `customers`, `catalog`, `orders` | Entra al sistema por la interfaz pública de `orders` |
 | `reports` | Lectura de todos | Única excepción: consultas de solo lectura propias, sin escribir en tablas ajenas |
+| `platform` | `tenants`, `users` | Agregado al implementar la fase 1.2. El alta de un local cruza los dos módulos, y la tabla de arriba no permite que `tenants` use `users`. Acá viven el alta y, desde la fase 8, el panel de plataforma |
 
 ### Estructura de carpetas
 
@@ -208,7 +209,9 @@ Los mensajes entrantes de WhatsApp llegan por webhook, sin sesión. El tenant se
 4. Hay límite de intentos por (local, usuario) y por IP.
 5. Después del login, el `tenant_id` sale siempre de la fila de la sesión, nunca de un dato que mande el cliente.
 
-Solo hay tres consultas fuera de RLS: el login (`slug` → tenant), el webhook de WhatsApp (`phone_number_id` → tenant) y el alta de tenants. Se resuelven con funciones `SECURITY DEFINER` mínimas: `resolve_tenant_by_slug`, `resolve_tenant_by_wa_phone` y `create_tenant`. Devuelven solo lo necesario (por lo general un `tenant_id`). Es preferible a darle `BYPASSRLS` al rol de la aplicación, porque con eso cualquier bug saltearía el aislamiento. Cada uso de estas funciones queda registrado en auditoría.
+Solo hay tres consultas fuera de RLS: el login (`slug` → tenant), el webhook de WhatsApp (`phone_number_id` → tenant) y el alta de tenants.
+
+**El rol dueño de esas funciones (agregado al implementar la fase 1.2).** `FORCE ROW LEVEL SECURITY` alcanza también al dueño de las tablas, así que una función `SECURITY DEFINER` que corra como el rol migrador **tampoco** puede resolver el slug: falla con `unrecognized configuration parameter app.tenant_id`. Es circular, porque el contexto de tenant es justo lo que se está averiguando. Se verificó contra la base, no es teoría. Por eso hay un tercer rol, `gastro_definer`, con `BYPASSRLS` y sin `LOGIN`, que es dueño solo de estas funciones. Sigue siendo muy distinto de darle `BYPASSRLS` al rol de la aplicación: la superficie privilegiada son dos funciones chicas en vez de todo el código. Un detalle útil: `BYPASSRLS` saltea las políticas pero no los `GRANT`, así que el rol arranca sin permisos sobre ninguna tabla y la migración le da exactamente los dos que necesita (`SELECT` en `tenants`, `INSERT` en `platform_audit_log`). Las funciones llevan `SET search_path` fijo, porque un `SECURITY DEFINER` sin eso es una vía de escalada conocida. Se resuelven con funciones `SECURITY DEFINER` mínimas: `resolve_tenant_by_slug`, `resolve_tenant_by_wa_phone` y `create_tenant`. Devuelven solo lo necesario (por lo general un `tenant_id`). Es preferible a darle `BYPASSRLS` al rol de la aplicación, porque con eso cualquier bug saltearía el aislamiento. Cada uso de estas funciones queda registrado en auditoría.
 
 **Reglas del slug y de la sesión por local**
 
@@ -653,7 +656,7 @@ Si alguien usara la clave temporal antes que el empleado, tendría que fijar una
 **Decisión:** en el MVP el alta la hace el administrador de plataforma con un script o CLI. Con 1 a 5 locales durante el piloto es barato, seguro y coincide con el onboarding acompañado.
 
 - **Administrador de plataforma:** vive en una tabla aparte (`platform_admins`), no es un rol dentro de un tenant ni un "tenant súper-usuario", que es la mezcla que suele romper el aislamiento. No tiene RLS de tenant, tiene login propio (por ejemplo `admin.<dominio>`), idealmente con 2FA, y cada acción queda en `platform_audit_log`.
-- **`create_tenant`** corre en una sola transacción, es idempotente y falla entera si algo sale mal. Crea:
+- **`create_tenant`** corre en una sola transacción, es idempotente (por slug) y falla entera si algo sale mal. **Está implementado como servicio del módulo `platform` y no como una función SQL grande** (decidido al implementar la fase 1.2): lo único que necesita privilegios es resolver el slug y escribir `platform_audit_log`, y eso lo hacen dos funciones `SECURITY DEFINER` mínimas. La plantilla de roles vive en el código (`src/modules/users/permissions.ts`); en SQL habría que duplicarla. El contexto de tenant se fija con el id nuevo antes de insertar, porque el `WITH CHECK` de la política de `tenants` lo exige — así no hace falta `BYPASSRLS` para dar de alta un local. Crea:
   1. El tenant con nombre y `slug`. El slug se valida (palabras reservadas como `admin`, `api`, `www`) y no se cambia después.
   2. La primera sucursal y su caja.
   3. Los roles base copiados desde una plantilla: Dueño, Encargado, Recepcionista/Cajero y Delivery, con sus permisos. Cocina queda fuera porque no usa el sistema.

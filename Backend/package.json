@@ -25,7 +25,8 @@
     "db:deploy:test": "cross-env NODE_ENV=test prisma migrate deploy",
     "db:reset": "prisma migrate reset --force",
     "coverage": "vitest run --coverage",
-    "monitoring:test": "tsx src/scripts/force-error.ts"
+    "monitoring:test": "tsx src/scripts/force-error.ts",
+    "create-tenant": "tsx src/scripts/create-tenant.ts"
   },
   "overrides": {
     "effect": "3.22.5"

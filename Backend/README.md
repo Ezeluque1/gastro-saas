@@ -7,10 +7,9 @@ Backend (arquitectura y contrato de la API) y el plan de fases. **Si el código 
 los documentos no coinciden, manda el documento** — y hay que actualizar el
 documento si algo cambió al implementarlo.
 
-Estado actual: **Fase 0 cerrada** y **Fase 1.1 cerrada** (esquema base y
-aislamiento entre locales). Siguen la 1.2 (`create_tenant` y las funciones
-`SECURITY DEFINER`), la 1.3 (login y sesiones) y la 1.4 (ciclo de claves y
-estados del local).
+Estado actual: **Fase 0**, **1.1** (esquema y aislamiento) y **1.2**
+(`create_tenant`) cerradas. Siguen la 1.3 (login y sesiones) y la 1.4 (ciclo de
+claves y estados del local).
 
 ## Arranque
 
@@ -21,7 +20,7 @@ y Docker.
 cp .env.example .env
 cp .env.test.example .env.test
 npm install
-npm run test:local          # levanta Postgres, migra y corre las 89 pruebas
+npm run test:local          # levanta Postgres, migra y corre las 121 pruebas
 ```
 
 `test:local` es el comando que levanta todo: arranca el contenedor, espera su
@@ -63,6 +62,7 @@ instalados en la máquina.
 | `npm run db:deploy:test`  | Igual, sobre la base de pruebas                                   |
 | `npm run db:reset`        | Borra y recrea la base de desarrollo                              |
 | `npm run monitoring:test` | Fuerza un error para verificar el monitoreo                       |
+| `npm run create-tenant`   | Da de alta un local (`-- --help` para ver las opciones)           |
 
 ## Lo que ya está en pie
 
@@ -91,11 +91,32 @@ prueba descubre la lista de tablas de la base, así que una tabla nueva con
 El rol de la aplicación no es superusuario, no es dueño de las tablas, no tiene
 `BYPASSRLS` y no puede alterar el esquema.
 
-**Dos roles de base.** `gastro_migrator` es dueño de las tablas y ejecuta las
+**Tres roles de base.** `gastro_migrator` es dueño de las tablas y ejecuta las
 migraciones (`DATABASE_MIGRATION_URL`, que usa solo la CLI de Prisma).
-`gastro_app` es el rol de la aplicación (`DATABASE_URL`). Los roles se crean en
-`docker/postgres-init/01-roles.sql` — el mismo archivo que usa el CI — y sus
-permisos viajan en las migraciones.
+`gastro_app` es el rol de la aplicación (`DATABASE_URL`). Y `gastro_definer`,
+con `BYPASSRLS` y sin `LOGIN`, es dueño **solo** de las dos funciones
+`SECURITY DEFINER`.
+
+Ese tercer rol no es un lujo: con `FORCE ROW LEVEL SECURITY`, una función que
+corra como el rol migrador tampoco puede resolver `slug → tenant_id`, porque el
+contexto de tenant es justo lo que se está averiguando. Sigue siendo distinto de
+darle `BYPASSRLS` a la aplicación — la superficie privilegiada son dos funciones
+chicas. `BYPASSRLS` saltea las políticas pero no los `GRANT`, así que el rol
+tiene exactamente dos permisos: `SELECT` en `tenants` e `INSERT` en
+`platform_audit_log`.
+
+Los roles se crean en `docker/postgres-init/01-roles.sql` — el mismo archivo que
+usa el CI — y los permisos sobre tablas viajan en las migraciones.
+
+**Alta de un local.** `npm run create-tenant` crea en una sola transacción el
+local, su configuración, la primera sucursal con su caja, los cuatro medios de
+pago, los cuatro roles con sus permisos y el Dueño con un link de activación de
+un solo uso. Es idempotente por slug: correrlo dos veces no duplica nada ni
+invalida el link ya enviado. Del link solo queda el hash SHA-256 en la base.
+
+Los dos topes en pesos se piden en el alta y, si no se cargan, quedan en 0 — lo
+que significa que **todo** egreso requiere aprobación. El script lo avisa fuerte,
+porque un Dueño que no lo sepa va a pensar que el sistema está roto.
 
 **Errores.** Todo error sale en `application/problem+json` (RFC 9457) con su
 código estable, desde `src/shared/errors/`. El frontend decide por `code`,
