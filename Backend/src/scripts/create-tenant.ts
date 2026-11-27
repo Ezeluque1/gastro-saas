@@ -1,5 +1,5 @@
 import { config } from '../config/index.js';
-import { createTenant } from '../modules/platform/index.js';
+import { platformModule } from '../modules/platform/index.js';
 import { createTenantSchema } from '../modules/tenants/index.js';
 import {
   buildActivationLink,
@@ -113,7 +113,7 @@ async function main(): Promise<void> {
   }
 
   const input = parsed.data;
-  const result = await createTenant(input);
+  const result = await platformModule.createTenant(input);
 
   if (result.alreadyExisted) {
     // Idempotente: no es un error, es el resultado correcto de correrlo dos

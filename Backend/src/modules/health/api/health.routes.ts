@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
-import { checkDatabase } from '../../shared/db/index.js';
-import { ServiceUnavailableError } from '../../shared/errors/index.js';
+import { checkDatabase } from '../../../shared/db/index.js';
+import { ServiceUnavailableError } from '../../../shared/errors/index.js';
 
 /**
  * GET /health

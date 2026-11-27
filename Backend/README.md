@@ -124,9 +124,41 @@ nunca por `detail`. Dentro de `v1` los códigos no se renombran. Un error
 inesperado es `500 internal_error` sin stack ni SQL: el `requestId` es lo que
 lleva al log.
 
-**Límites entre módulos.** ESLint los hace cumplir, no la disciplina: un módulo
-solo importa el `index.ts` de otro, y el cliente Prisma no se puede importar
-fuera de `shared/db`. Está en `eslint.config.js` y falla el CI.
+**Arquitectura por módulo.** Cada módulo tiene las mismas cuatro capas, y las
+dependencias apuntan **siempre hacia adentro**:
+
+```
+src/modules/<nombre>/
+  api/              # rutas, controladores, DTOs y validación Zod
+  application/      # casos de uso; reciben la transacción y los puertos
+  domain/           # tipos, reglas puras y los PUERTOS (interfaces)
+  infrastructure/   # implementaciones de los puertos, con Prisma Client
+  tests/
+  <nombre>.module.ts  # construye los casos de uso e inyecta dependencias
+  index.ts            # interfaz pública del módulo
+```
+
+`api` → `application` → `domain`, e `infrastructure` → `domain`. El centro no
+conoce a nadie: los puertos viven en `domain/`, así un caso de uso se puede
+probar sin base de datos y Prisma queda confinado a `infrastructure/`.
+
+La inyección es a mano, en `<nombre>.module.ts`, sin contenedor: es el único
+archivo del módulo que ve `application/` e `infrastructure/` a la vez.
+
+**ESLint lo hace cumplir, no la disciplina.** Falla el CI si una capa importa
+hacia afuera, si un módulo entra a las capas internas de otro, o si el cliente
+Prisma se importa fuera de `shared/db`. Está en `eslint.config.js`, y se
+verificó que detecta las tres violaciones.
+
+**Prisma Client tipado en los repositorios.** El SQL crudo queda reservado para
+donde no hay alternativa, y hoy son tres lugares, cada uno documentado: las dos
+llamadas a funciones `SECURITY DEFINER` (Prisma no modela llamadas a funciones)
+y el `set_config` de `withTenant()`. Importa porque `updated_at` es `NOT NULL`
+sin default en la base: con el cliente tipado lo pone `@updatedAt`, y con SQL
+crudo había que escribir `now()` a mano en cada insert.
+
+`pretest` corre `prisma generate`, para que el cliente generado no vuelva a
+quedar viejo sin que nadie lo note.
 
 **Permisos.** El catálogo vive en el código
 (`src/modules/users/permissions.ts`), no en una tabla: es parte del contrato de

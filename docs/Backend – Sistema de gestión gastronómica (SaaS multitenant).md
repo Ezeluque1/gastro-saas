@@ -54,11 +54,25 @@ El backend es un monolito modular: una sola aplicación y un solo despliegue, di
 
 ### Capas dentro de cada módulo
 
+Cada módulo tiene la misma estructura interna, en cuatro capas. El orden de las dependencias va **siempre hacia adentro**: `api` → `application` → `domain`, e `infrastructure` → `domain`. El centro (`domain`) no conoce a nadie.
+
 | Capa | Responsabilidad | No debe |
 | --- | --- | --- |
-| Rutas (`*.routes.ts`) | Recibir la request, validar con Zod, exigir el permiso y llamar al servicio | Contener reglas de negocio ni SQL |
-| Servicios (`*.service.ts`) | Casos de uso y reglas de negocio (totales, transiciones de estado, stock). Reciben la transacción abierta | Conocer `req` ni `res` de Express |
-| Repositorios (`*.repository.ts`) | Consultas con Prisma Client sobre las tablas del módulo, siempre con la transacción recibida (`tx`). SQL crudo parametrizado solo donde hace falta atomicidad (descuento de stock, numeración de pedidos) | Decidir reglas de negocio |
+| `api/` | Entrada HTTP: rutas, controladores, DTOs y validación con Zod. Traduce la request a una llamada al caso de uso y el resultado a una respuesta | Contener reglas de negocio, SQL, ni importar `infrastructure/` |
+| `application/` | Casos de uso: orquestan las reglas del dominio y los puertos. Reciben la transacción abierta (`tx`) y las dependencias ya construidas | Conocer `req` ni `res` de Express, ni importar `infrastructure/` o `api/` |
+| `domain/` | Tipos de entidad, reglas de negocio puras (totales, transiciones de estado, validez de un slug) y las **interfaces de los puertos** que necesita el módulo | Importar ninguna otra capa, ni Prisma, ni Express. No tiene dependencias hacia afuera |
+| `infrastructure/` | Implementaciones de los puertos: repositorios con Prisma Client, clientes de servicios externos. Siempre con la transacción recibida (`tx`). SQL crudo parametrizado solo donde hace falta atomicidad (descuento de stock, numeración de pedidos) | Decidir reglas de negocio, ni importar `api/` |
+| `<módulo>.module.ts` | Configuración del módulo: construye los casos de uso inyectándoles las implementaciones concretas de los puertos, y expone sus rutas | Contener lógica propia |
+| `index.ts` | Interfaz pública del módulo: lo único que los demás módulos pueden importar | Exportar repositorios ni tipos internos |
+| `tests/` | Pruebas del módulo, unitarias y de integración | — |
+
+**Por qué los puertos viven en `domain/` y no al lado de su implementación.** Es lo que permite probar un caso de uso sin base de datos y, sobre todo, lo que hace que la dependencia apunte hacia adentro: `application` depende de una interfaz que está en el centro, no de Prisma. Si mañana una tabla se consulta distinto, cambia `infrastructure/` y nada más.
+
+**Inyección de dependencias sin contenedor.** El archivo `<módulo>.module.ts` arma los casos de uso a mano, pasándoles las implementaciones. No se usa un contenedor de inyección: con un monolito modular y un solo desarrollador, la composición explícita se lee mejor y no agrega una pieza más que entender. Si el proyecto crece, se puede cambiar sin tocar las capas.
+
+**Hasta dónde llega el dominio.** `domain/` tiene tipos, reglas puras y puertos, no entidades con comportamiento rico ni *value objects* para cada campo. Este sistema es sobre todo datos y reglas transaccionales; un modelo de dominio completo agregaría capas de traducción sin resolver ningún problema que tengamos.
+
+**Cómo se hace cumplir.** No con disciplina: una regla de ESLint (`no-restricted-imports`) falla el CI si una capa importa hacia afuera, o si un módulo importa algo de otro que no sea su `index.ts`.
 
 ### Módulos
 
@@ -108,12 +122,20 @@ src/
     logger/
   modules/
     orders/
-      orders.routes.ts
-      orders.schemas.ts      # esquemas Zod
-      orders.service.ts
-      orders.repository.ts
-      orders.state-machine.ts
+      api/                   # rutas, controladores, DTOs y validación Zod
+        orders.routes.ts
+        orders.schemas.ts
+      application/           # casos de uso: crear pedido, cancelar, cambiar estado
+        create-order.ts
+      domain/                # entidades, reglas puras y los puertos (interfaces)
+        order.ts
+        order-state-machine.ts
+        order.repository.ts  # la INTERFAZ, no la implementación
+      infrastructure/         # implementaciones de los puertos, con Prisma
+        prisma-order.repository.ts
+      tests/
       orders.events.ts       # eventos que emite el módulo
+      orders.module.ts       # construye los casos de uso e inyecta dependencias
       index.ts               # interfaz pública del módulo
     catalog/ ...
     stock/ ...

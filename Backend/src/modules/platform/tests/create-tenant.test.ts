@@ -2,17 +2,14 @@ import { randomUUID } from 'node:crypto';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { createTenant } from '../../src/modules/platform/index.js';
-import {
-  createTenantSchema,
-  resolveTenantBySlug,
-} from '../../src/modules/tenants/index.js';
+import { platformModule } from '../index.js';
+import { createTenantSchema, tenantsModule } from '../../tenants/index.js';
 import {
   ROLE_TEMPLATES,
   hashActivationToken,
   buildActivationLink,
-} from '../../src/modules/users/index.js';
-import { disconnectDatabase, withTenant } from '../../src/shared/db/index.js';
+} from '../../users/index.js';
+import { disconnectDatabase, withTenant } from '../../../shared/db/index.js';
 
 /**
  * Alta de un local, contra PostgreSQL real.
@@ -67,7 +64,7 @@ async function contar(tenantId: string, tabla: string): Promise<number> {
 describe('alta de un local', () => {
   it('deja el local listo para operar el primer dia', async () => {
     const input = datos();
-    const result = await createTenant(input);
+    const result = await platformModule.createTenant(input);
 
     expect(result.alreadyExisted).toBe(false);
     if (result.alreadyExisted) return;
@@ -85,10 +82,10 @@ describe('alta de un local', () => {
   });
 
   it('el local arranca en estado piloto', async () => {
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
-    const resuelto = await resolveTenantBySlug(result.slug);
+    const resuelto = await tenantsModule.resolveTenantBySlug(result.slug);
 
     expect(resuelto?.status).toBe('pilot');
   });
@@ -96,7 +93,7 @@ describe('alta de un local', () => {
   it('el Dueno queda con alcance sobre todas las sucursales', async () => {
     // branch_id nulo significa "todas". Los permisos que afectan al local
     // entero (precios, configuracion, usuarios) solo valen con ese alcance.
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const asignacion = await withTenant(result.tenantId, async (tx) => {
@@ -111,7 +108,7 @@ describe('alta de un local', () => {
   });
 
   it('copia los permisos de cada rol tal como los define la plantilla', async () => {
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const porRol = await withTenant(result.tenantId, async (tx) => {
@@ -141,7 +138,7 @@ describe('alta de un local', () => {
   it('el Dueno no guarda permisos fila por fila', async () => {
     // Se calculan en el codigo a partir de template_key: asi un permiso nuevo
     // del catalogo le llega solo, sin migrar datos.
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const filas = await withTenant(result.tenantId, async (tx) => {
@@ -158,7 +155,7 @@ describe('alta de un local', () => {
   });
 
   it('los cuatro roles quedan protegidos como roles de sistema', async () => {
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const noSistema = await withTenant(result.tenantId, async (tx) => {
@@ -177,7 +174,7 @@ describe('topes del Recepcionista', () => {
     // Ningun monto en pesos tiene valor por defecto: con la inflacion
     // cualquier numero queda viejo. 0 significa que todo egreso requiere
     // aprobacion, y es la opcion segura.
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const topes = await withTenant(result.tenantId, async (tx) => {
@@ -199,7 +196,7 @@ describe('topes del Recepcionista', () => {
   });
 
   it('guarda los topes que se cargan en el alta', async () => {
-    const result = await createTenant(
+    const result = await platformModule.createTenant(
       datos({ egressLimitAmount: 50000, egressShiftLimitAmount: 150000 }),
     );
     if (result.alreadyExisted) expect.unreachable();
@@ -217,7 +214,7 @@ describe('topes del Recepcionista', () => {
   });
 
   it('usa la zona horaria y el corte del dia de Argentina por defecto', async () => {
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const ajustes = await withTenant(result.tenantId, async (tx) => {
@@ -236,11 +233,11 @@ describe('idempotencia', () => {
   it('correrla dos veces con el mismo slug no duplica nada', async () => {
     const input = datos();
 
-    const primera = await createTenant(input);
+    const primera = await platformModule.createTenant(input);
     expect(primera.alreadyExisted).toBe(false);
     if (primera.alreadyExisted) return;
 
-    const segunda = await createTenant(input);
+    const segunda = await platformModule.createTenant(input);
 
     expect(segunda.alreadyExisted).toBe(true);
     expect(segunda.tenantId).toBe(primera.tenantId);
@@ -253,7 +250,7 @@ describe('idempotencia', () => {
 
   it('no crea un segundo Dueno ni un segundo link de activacion', async () => {
     const input = datos();
-    const primera = await createTenant(input);
+    const primera = await platformModule.createTenant(input);
     if (primera.alreadyExisted) expect.unreachable();
 
     const hashOriginal = await withTenant(primera.tenantId, async (tx) => {
@@ -263,7 +260,7 @@ describe('idempotencia', () => {
       return rows[0]?.h;
     });
 
-    await createTenant(input);
+    await platformModule.createTenant(input);
 
     const hashDespues = await withTenant(primera.tenantId, async (tx) => {
       const rows = await tx.$queryRaw<{ h: string }[]>`
@@ -300,12 +297,12 @@ describe('atomicidad', () => {
       businessDayCutoff: '05:00',
     };
 
-    await expect(createTenant(entradaQueFallaAlFinal)).rejects.toThrow(
+    await expect(platformModule.createTenant(entradaQueFallaAlFinal)).rejects.toThrow(
       /too long|varying/i,
     );
 
     // El local no tiene que existir: la transaccion se revirtio completa.
-    expect(await resolveTenantBySlug(slug)).toBeNull();
+    expect(await tenantsModule.resolveTenantBySlug(slug)).toBeNull();
   });
 
   it('un slug que ya existe no puede duplicarse ni ganando la carrera', async () => {
@@ -315,8 +312,8 @@ describe('atomicidad', () => {
     const input = datos();
 
     const resultados = await Promise.allSettled([
-      createTenant(input),
-      createTenant(input),
+      platformModule.createTenant(input),
+      platformModule.createTenant(input),
     ]);
 
     const creados = resultados.filter(
@@ -327,7 +324,7 @@ describe('atomicidad', () => {
     // restriccion unica; las dos salidas son correctas.
     expect(creados.length).toBeLessThanOrEqual(1);
 
-    const resuelto = await resolveTenantBySlug(input.slug);
+    const resuelto = await tenantsModule.resolveTenantBySlug(input.slug);
     expect(resuelto).not.toBeNull();
   });
 });
@@ -336,8 +333,8 @@ describe('aislamiento', () => {
   it('dos locales creados por el alta siguen aislados entre si', async () => {
     // El alta es la primera cosa que escribe datos reales: vale confirmar que
     // no abrio ningun agujero en lo que la fase 1.1 dejo probado.
-    const a = await createTenant(datos());
-    const b = await createTenant(datos());
+    const a = await platformModule.createTenant(datos());
+    const b = await platformModule.createTenant(datos());
     if (a.alreadyExisted || b.alreadyExisted) expect.unreachable();
 
     expect(a.tenantId).not.toBe(b.tenantId);
@@ -363,7 +360,7 @@ describe('aislamiento', () => {
 
 describe('link de activacion', () => {
   it('en la base queda solo el hash, nunca el token', async () => {
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const guardado = await withTenant(result.tenantId, async (tx) => {
@@ -383,7 +380,7 @@ describe('link de activacion', () => {
   it('el usuario queda sin contrasena hasta que active', async () => {
     // Asi el administrador que da de alta el local nunca conoce la clave del
     // Dueno.
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
     const usuario = await withTenant(result.tenantId, async (tx) => {
@@ -421,10 +418,10 @@ describe('link de activacion', () => {
 
 describe('resolve_tenant_by_slug', () => {
   it('devuelve el local y su estado', async () => {
-    const result = await createTenant(datos());
+    const result = await platformModule.createTenant(datos());
     if (result.alreadyExisted) expect.unreachable();
 
-    const resuelto = await resolveTenantBySlug(result.slug);
+    const resuelto = await tenantsModule.resolveTenantBySlug(result.slug);
 
     expect(resuelto?.id).toBe(result.tenantId);
     expect(resuelto?.status).toBe('pilot');
@@ -434,20 +431,22 @@ describe('resolve_tenant_by_slug', () => {
     // No distingue de ninguna otra causa: el login responde el mismo error
     // para local inexistente, usuario inexistente y clave incorrecta, asi no se
     // pueden enumerar los locales de la plataforma.
-    expect(await resolveTenantBySlug(`no-existe-${randomUUID().slice(0, 8)}`)).toBeNull();
+    expect(
+      await tenantsModule.resolveTenantBySlug(`no-existe-${randomUUID().slice(0, 8)}`),
+    ).toBeNull();
   });
 
   it('registra cada uso, incluso los que no encuentran nada', async () => {
     // Es lo que deja rastro de alguien probando nombres de locales.
     const slug = `inventado-${randomUUID().slice(0, 8)}`;
 
-    await resolveTenantBySlug(slug);
+    await tenantsModule.resolveTenantBySlug(slug);
 
     // La aplicacion no puede leer platform_audit_log, asi que no se puede
     // verificar desde aca con el rol de la app. Lo que si se verifica es que la
     // llamada no falle: si el log fallara, la funcion entera fallaria, porque
     // escribe antes de buscar.
-    expect(await resolveTenantBySlug(slug)).toBeNull();
+    expect(await tenantsModule.resolveTenantBySlug(slug)).toBeNull();
   });
 });
 

@@ -3,22 +3,26 @@ import prettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
 
 /**
- * Las reglas de modularidad del documento se hacen cumplir con herramientas,
- * no solo con disciplina: lo que esta abajo falla el CI cuando un modulo cruza
- * un limite que no deberia.
+ * Las reglas de arquitectura se hacen cumplir con herramientas, no solo con
+ * disciplina: lo que esta abajo falla el CI cuando alguien cruza un limite.
  *
- * Lo que se vigila:
+ * Tres cosas se vigilan:
  *
  *  1. El cliente Prisma no se usa fuera de shared/db. Si alguien consultara por
  *     fuera de withTenant(), RLS devolveria un error en vez de datos de otro
  *     local, pero conviene que falle en el CI y no en produccion.
  *  2. Un modulo usa solo la interfaz publica (index.ts) de otro, nunca sus
- *     servicios ni sus repositorios.
+ *     capas internas.
+ *  3. Las dependencias entre capas apuntan SIEMPRE hacia adentro:
+ *     api -> application -> domain, e infrastructure -> domain. El centro
+ *     (domain) no conoce a nadie.
  *
- * La deteccion de ciclos entre modulos (dependency-cruiser) queda pendiente;
- * con los pocos modulos de la Fase 0 no aporta todavia.
+ * docs/Backend: "Capas dentro de cada modulo" y "Reglas de modularidad".
  *
- * docs/Backend: "Reglas de modularidad" y "Prisma y el contexto de tenant".
+ * Nota sobre los patrones: en no-restricted-imports, `*` tambien matchea `..`,
+ * asi que un patron de dos segmentos atrapa de paso a `../../shared/...`. Por
+ * eso cada grupo lleva una negacion final que vuelve a permitir lo que sale del
+ * modulo.
  */
 
 const PRISMA_OUTSIDE_DB = {
@@ -27,15 +31,47 @@ const PRISMA_OUTSIDE_DB = {
     'El cliente Prisma solo se usa dentro de shared/db. Pedi la transaccion (Tx) de withTenant() y pasala como parametro.',
 };
 
-const CROSS_MODULE_INTERNALS = {
-  // Ojo con el orden y con `*`: en estos patrones `*` tambien matchea `..`, asi
-  // que `../*/**` atrapa de paso a `../../shared/...`. La ultima negacion
-  // vuelve a permitir todo lo que sale de modules/ (shared, config), que no es
-  // lo que esta regla cuida.
+/**
+ * Limite entre modulos, visto desde la raiz de un modulo
+ * (index.ts, <nombre>.module.ts): otro modulo esta en `../<nombre>/`.
+ */
+const CROSS_MODULE_FROM_ROOT = {
   group: ['../*/**', '!../*/index.js', '!../../**'],
   message:
-    'Un modulo usa solo la interfaz publica (index.js) de otro, nunca sus servicios ni sus repositorios.',
+    'Un modulo usa solo la interfaz publica (index.js) de otro, nunca sus capas internas.',
 };
+
+/**
+ * Lo mismo visto desde una capa (api/, application/, domain/,
+ * infrastructure/, tests/): otro modulo esta dos niveles arriba.
+ */
+const CROSS_MODULE_FROM_LAYER = {
+  group: ['../../*/**', '!../../*/index.js', '!../../../**'],
+  message:
+    'Un modulo usa solo la interfaz publica (index.js) de otro, nunca sus capas internas.',
+};
+
+/**
+ * Limite entre modulos visto desde las pruebas transversales de `tests/`, que
+ * estan fuera de `src/`: un modulo esta en `../../src/modules/<nombre>/`.
+ *
+ * Estas pruebas SI pueden importar de `src/shared/...`, porque prueban
+ * justamente el pipeline y los helpers compartidos.
+ */
+const CROSS_MODULE_FROM_ROOT_TESTS = {
+  group: ['../../src/modules/*/**', '!../../src/modules/*/index.js'],
+  message:
+    'Una prueba transversal usa solo la interfaz publica (index.js) de un modulo. Si necesita las piezas internas, la prueba va dentro del modulo, en src/modules/<nombre>/tests/.',
+};
+
+/** Capas que una capa dada no puede importar, por estar mas afuera. */
+function hacia(capas) {
+  return {
+    group: capas.map((capa) => `../${capa}/**`),
+    message:
+      'Las dependencias entre capas apuntan hacia adentro: api -> application -> domain, infrastructure -> domain. Si hace falta una implementacion concreta, se inyecta desde <modulo>.module.ts.',
+  };
+}
 
 export default tseslint.config(
   {
@@ -56,7 +92,7 @@ export default tseslint.config(
     },
     rules: {
       // En ESM los imports internos llevan extension .js, incluso apuntando a
-      // un .ts. Es la fricción conocida de Prisma 7 + ESM: que falle en el
+      // un .ts. Es la friccion conocida de Prisma 7 + ESM: que falle en el
       // editor y no al compilar para produccion.
       '@typescript-eslint/consistent-type-imports': [
         'error',
@@ -90,25 +126,109 @@ export default tseslint.config(
     },
   },
 
-  // Dentro de los modulos se suma el limite entre modulos.
+  // Raiz de un modulo: index.ts y <nombre>.module.ts.
+  //
+  // El archivo .module.ts es el UNICO del modulo que puede importar
+  // infrastructure/, porque su trabajo es justamente inyectar las
+  // implementaciones concretas en los casos de uso.
   {
-    files: ['src/modules/**/*.ts'],
+    files: ['src/modules/*/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
-        { patterns: [PRISMA_OUTSIDE_DB, CROSS_MODULE_INTERNALS] },
+        { patterns: [PRISMA_OUTSIDE_DB, CROSS_MODULE_FROM_ROOT] },
       ],
     },
   },
 
-  // Las pruebas necesitan margen: aserciones sobre datos sin tipar y acceso a
-  // la base para preparar escenarios.
+  // domain/: el centro. No importa ninguna otra capa.
   {
-    files: ['tests/**/*.ts'],
+    files: ['src/modules/*/domain/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            PRISMA_OUTSIDE_DB,
+            CROSS_MODULE_FROM_LAYER,
+            hacia(['api', 'application', 'infrastructure']),
+          ],
+        },
+      ],
+    },
+  },
+
+  // application/: casos de uso. Solo domain. Las implementaciones se inyectan.
+  {
+    files: ['src/modules/*/application/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            PRISMA_OUTSIDE_DB,
+            CROSS_MODULE_FROM_LAYER,
+            hacia(['api', 'infrastructure']),
+          ],
+        },
+      ],
+    },
+  },
+
+  // infrastructure/: implementa los puertos de domain. No conoce la entrada.
+  {
+    files: ['src/modules/*/infrastructure/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        { patterns: [PRISMA_OUTSIDE_DB, CROSS_MODULE_FROM_LAYER, hacia(['api'])] },
+      ],
+    },
+  },
+
+  // api/: entrada HTTP. Llama a los casos de uso, nunca a la infraestructura.
+  {
+    files: ['src/modules/*/api/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            PRISMA_OUTSIDE_DB,
+            CROSS_MODULE_FROM_LAYER,
+            hacia(['infrastructure']),
+          ],
+        },
+      ],
+    },
+  },
+
+  // Las pruebas necesitan margen: aserciones sobre datos sin tipar, y poder
+  // armar escenarios con las piezas internas del modulo que prueban.
+  {
+    files: ['tests/**/*.ts', 'src/modules/*/tests/**/*.ts'],
     rules: {
       '@typescript-eslint/no-unsafe-assignment': 'off',
       '@typescript-eslint/no-unsafe-member-access': 'off',
       '@typescript-eslint/no-non-null-assertion': 'off',
+    },
+  },
+
+  // Pruebas transversales (tests/): el pipeline HTTP, los helpers compartidos y
+  // el aislamiento entre locales, que no es de ningun modulo.
+  {
+    files: ['tests/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [CROSS_MODULE_FROM_ROOT_TESTS] }],
+    },
+  },
+
+  // Pruebas de un modulo: pueden usar sus propias capas internas, pero de otro
+  // modulo solo su interfaz publica.
+  {
+    files: ['src/modules/*/tests/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [CROSS_MODULE_FROM_LAYER] }],
     },
   },
 

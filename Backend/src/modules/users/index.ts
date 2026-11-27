@@ -1,13 +1,18 @@
 // Interfaz publica del modulo `users`.
-export { createBaseRoles, createOwner } from './users.service.js';
-export type { CreatedRoles, CreatedOwner } from './users.service.js';
+export { usersModule, createUsersModule } from './users.module.js';
+export type { UsersModule } from './users.module.js';
+
+export type { CreatedRoles } from './application/create-base-roles.js';
+export type { CreatedOwner } from './application/create-owner.js';
+
 export {
   createActivationToken,
   hashActivationToken,
   buildActivationLink,
   ACTIVATION_TOKEN_TTL_HOURS,
-} from './activation-token.js';
-export type { ActivationToken } from './activation-token.js';
+} from './domain/activation-token.js';
+export type { ActivationToken } from './domain/activation-token.js';
+
 export {
   PERMISSIONS,
   ALL_PERMISSIONS,
@@ -15,6 +20,7 @@ export {
   ROLE_TEMPLATE_KEYS,
   TENANT_WIDE_PERMISSIONS,
   OWNER_HAS_ALL_PERMISSIONS,
+  PERMISSIONS_NOT_IN_TEMPLATE,
   isPermission,
-} from './permissions.js';
-export type { Permission, RoleTemplate, RoleTemplateKey } from './permissions.js';
+} from './domain/permissions.js';
+export type { Permission, RoleTemplate, RoleTemplateKey } from './domain/permissions.js';

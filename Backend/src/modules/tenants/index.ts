@@ -1,11 +1,25 @@
 // Interfaz publica del modulo `tenants`.
 //
-// Los demas modulos usan solo lo que se exporta aca, nunca el repositorio.
-export { resolveTenantBySlug, createTenantCore } from './tenants.service.js';
+// Los demas modulos importan SOLO desde aca, nunca de api/, application/,
+// domain/ ni infrastructure/. Una regla de ESLint lo hace cumplir.
+export { tenantsModule, createTenantsModule } from './tenants.module.js';
+export type { TenantsModule } from './tenants.module.js';
+
+export { createTenantSchema, slugSchema } from './api/tenants.schemas.js';
+export type { CreateTenantInput } from './api/tenants.schemas.js';
+
+export {
+  RESERVED_SLUGS,
+  checkSlug,
+  INITIAL_TENANT_STATUS,
+  DEFAULT_TIMEZONE,
+  DEFAULT_BUSINESS_DAY_CUTOFF,
+} from './domain/tenant.js';
 export type {
   ResolvedTenant,
   TenantStatus,
-  CreatedTenantParts,
-} from './tenants.service.js';
-export { createTenantSchema, slugSchema, RESERVED_SLUGS } from './tenants.schemas.js';
-export type { CreateTenantInput } from './tenants.schemas.js';
+  NewTenant,
+  SlugProblem,
+} from './domain/tenant.js';
+
+export type { CreatedTenantParts } from './application/create-tenant-core.js';

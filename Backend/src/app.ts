@@ -3,7 +3,7 @@ import helmet from 'helmet';
 import { pinoHttp } from 'pino-http';
 
 import { config } from './config/index.js';
-import { healthRoutes } from './modules/health/health.routes.js';
+import { healthModule } from './modules/health/index.js';
 import {
   errorHandler,
   generalRateLimit,
@@ -93,7 +93,7 @@ export function createApp(options: AppOptions = {}): Express {
 
   // 5. Health check: antes del jsonOnly y del parseo, porque es un GET y no
   //    debe depender de nada que pueda fallar.
-  app.use(healthRoutes());
+  app.use(healthModule.routes);
 
   // 6. Solo JSON en las escrituras (parte de la defensa contra CSRF) y limite
   //    de cuerpo.

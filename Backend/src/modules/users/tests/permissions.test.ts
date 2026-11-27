@@ -9,7 +9,7 @@ import {
   ROLE_TEMPLATE_KEYS,
   TENANT_WIDE_PERMISSIONS,
   isPermission,
-} from '../../src/modules/users/permissions.js';
+} from '../domain/permissions.js';
 
 /**
  * El catalogo de permisos y la plantilla de roles.

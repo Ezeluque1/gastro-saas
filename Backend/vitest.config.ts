@@ -5,7 +5,11 @@ export default defineConfig({
     // Las pruebas corren con NODE_ENV=test, asi que src/config carga .env.test
     // y apuntan a la base gastro_test, nunca a la de desarrollo.
     env: { NODE_ENV: 'test' },
-    include: ['tests/**/*.test.ts'],
+    // Las pruebas de cada modulo viven dentro del modulo
+    // (src/modules/<nombre>/tests/); en tests/ quedan las transversales: el
+    // pipeline HTTP, los helpers compartidos y el aislamiento entre locales,
+    // que no es de ningun modulo en particular.
+    include: ['tests/**/*.test.ts', 'src/modules/**/tests/**/*.test.ts'],
     // Las pruebas de integracion comparten una base real: si corrieran en
     // paralelo se pisarian entre si. La Fase 1, con datos de dos tenants, es
     // justo donde esto importa.
@@ -15,7 +19,12 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**/*.ts'],
-      exclude: ['src/generated/**', 'src/server.ts'],
+      exclude: [
+        'src/generated/**',
+        'src/server.ts',
+        'src/modules/**/tests/**',
+        'src/**/*.module.ts',
+      ],
     },
   },
 });
