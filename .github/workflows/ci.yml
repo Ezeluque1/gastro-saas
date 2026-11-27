@@ -63,6 +63,9 @@ jobs:
       - name: Crear roles y bases
         # Se ejecuta el MISMO script que usa el contenedor de desarrollo, para
         # que CI y local no se vayan separando.
+        #
+        # Aca no hay carrera de inicializacion: GitHub espera a que el service
+        # container este healthy antes de correr cualquier step.
         run: psql -h localhost -U postgres -v ON_ERROR_STOP=1 -f docker/postgres-init/01-roles.sql
         env:
           PGPASSWORD: postgres
@@ -97,7 +100,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       - name: Construir la imagen
-        # El build en la imagen es parte del CI a proposito: es donde aparece la
+        # El build de la imagen es parte del CI a proposito: es donde aparece la
         # friccion de ESM + Prisma 7 si el generador y el tsconfig se
         # desalinean. Vale encontrarlo aca y no al desplegar.
         uses: docker/build-push-action@v6
@@ -108,33 +111,62 @@ jobs:
           tags: saas-gastro-backend:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          # `load: true` usa el exporter `docker`, que no sabe cargar manifest
+          # lists. Con las attestations que buildx agrega por defecto en GitHub
+          # la imagen puede quedar sin cargar en el daemon y el step siguiente
+          # no la encuentra. No hacen falta para una imagen que no se publica.
+          provenance: false
+          sbom: false
 
       - name: Verificar que la imagen arranca y responde /health
         working-directory: .
         run: |
+          set -euo pipefail
+
           docker network create ci-net
+
+          # El SQL de roles se monta en /docker-entrypoint-initdb.d para que lo
+          # ejecute el propio entrypoint de la imagen durante la
+          # inicializacion. Es el mismo archivo que usa docker-compose en
+          # desarrollo, asi que CI y local no se van separando.
+          #
+          # Antes este step esperaba a Postgres con `pg_isready` y le aplicaba
+          # el SQL desde afuera con psql, y ahi hay una carrera: durante el
+          # primer arranque la imagen oficial levanta un servidor TEMPORAL para
+          # correr los scripts de init, y pg_isready contesta "accepting
+          # connections" contra ese servidor. Despues lo apaga para arrancar el
+          # definitivo, y toda conexion que caiga en esa ventana muere con
+          # 'socket "/run/postgresql/.s.PGSQL.5432" failed: No such file or
+          # directory'. Es exactamente lo que rompio este job.
           docker run -d --name ci-db --network ci-net \
-            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+            -e POSTGRES_USER=postgres \
+            -e POSTGRES_PASSWORD=postgres \
+            -v "$GITHUB_WORKSPACE/Backend/docker/postgres-init:/docker-entrypoint-initdb.d:ro" \
             postgres:18-alpine
-          for i in $(seq 1 60); do
-            docker exec ci-db pg_isready -U postgres && break
-            sleep 1
-          done
-          docker cp Backend/docker/postgres-init/01-roles.sql ci-db:/tmp/roles.sql
-          docker exec -e PGPASSWORD=postgres ci-db \
-            psql -U postgres -v ON_ERROR_STOP=1 -f /tmp/roles.sql
+
           docker run -d --name ci-api --network ci-net -p 3000:3000 \
             -e APP_ORIGIN=http://localhost:3000 \
             -e DATABASE_URL=postgresql://gastro_app:app_dev@ci-db:5432/gastro \
             -e DATABASE_MIGRATION_URL=postgresql://gastro_migrator:migrator_dev@ci-db:5432/gastro \
             saas-gastro-backend:ci
-          for i in $(seq 1 30); do
+
+          # GET /health responde 503 mientras la base no contesta, asi que este
+          # loop cubre tambien la inicializacion de Postgres: no hay que
+          # esperarla aparte, y no queda ninguna ventana donde conectarse de
+          # mas. Lo que se verifica es justamente lo que mira el monitor de
+          # uptime: que la imagen levante Y que llegue a la base.
+          for _ in $(seq 1 60); do
             if curl -fsS http://localhost:3000/health; then
+              echo ""
               echo "health OK"
               exit 0
             fi
-            sleep 1
+            sleep 2
           done
-          echo "la imagen no respondio /health"
-          docker logs ci-api
+
+          echo "::error::la imagen no respondio /health"
+          echo "--- logs de la API ---"
+          docker logs ci-api || true
+          echo "--- logs de Postgres ---"
+          docker logs ci-db || true
           exit 1
